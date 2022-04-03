@@ -65,17 +65,35 @@ typedef struct {
     wrap_nvmlValue value;
 } wrap_nvmlFieldValue;
 
+#define NVAPI_MAX_PHYSICAL_GPUS 64
+#define THERMAL_SENSOR_RESERVED_COUNT 8
+#define THERMAL_SENSOR_TEMPERATURE_COUNT 32
+typedef struct {
+    unsigned int Version;
+    unsigned int Mask;
+    int Reserved[THERMAL_SENSOR_RESERVED_COUNT];
+    int Temperatures[THERMAL_SENSOR_TEMPERATURE_COUNT];
+} wrap_nvapiThermalSensors;
+
+typedef struct {
+    wrap_nvmlDevice_t gpu;
+    unsigned int Mask;
+} nvapi_device_handles;
+
 /*
  * Handle to hold the function pointers for the entry points we need,
  * and the shared library itself.
  */
 typedef struct {
     void* nvml_dll;
+    void* nvapi_dll;
     int nvml_gpucount;
     unsigned int* nvml_pci_domain_id;
     unsigned int* nvml_pci_bus_id;
     unsigned int* nvml_pci_device_id;
     wrap_nvmlDevice_t* devs;
+    wrap_nvapiThermalSensors nvapi_ts;
+    nvapi_device_handles* nvapi_devs;
     wrap_nvmlReturn_t (*nvmlInit)(void);
     wrap_nvmlReturn_t (*nvmlDeviceGetCount)(int*);
     wrap_nvmlReturn_t (*nvmlDeviceGetHandleByIndex)(int, wrap_nvmlDevice_t*);
@@ -86,6 +104,8 @@ typedef struct {
     wrap_nvmlReturn_t (*nvmlDeviceGetPowerUsage)(wrap_nvmlDevice_t, unsigned int*);
     wrap_nvmlReturn_t (*nvmlShutdown)(void);
     wrap_nvmlReturn_t (*nvmlDeviceGetFieldValues)(wrap_nvmlDevice_t, int, wrap_nvmlFieldValue*);
+    wrap_nvmlDevice_t (*nvapi_QueryInterface)(unsigned int);
+    wrap_nvmlReturn_t (*nvapi_GetThermalSensors)(wrap_nvmlDevice_t, wrap_nvapiThermalSensors*);
 } wrap_nvml_handle;
 
 wrap_nvml_handle* wrap_nvml_create();
@@ -108,6 +128,8 @@ int wrap_nvml_get_gpu_name(wrap_nvml_handle* nvmlh, int gpuindex, char* namebuf,
 int wrap_nvml_get_tempC(wrap_nvml_handle* nvmlh, int gpuindex, unsigned int* tempC);
 
 int wrap_nvml_get_mem_tempC(wrap_nvml_handle* nvmlh, int gpuindex, unsigned int* tempC);
+
+int wrap_nvml_get_memory_tempC(wrap_nvml_handle* nvmlh, int gpuindex, unsigned int* tempC);
 
 /*
  * Query the current GPU fan speed (percent) from the CUDA device ID
