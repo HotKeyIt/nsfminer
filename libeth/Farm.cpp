@@ -417,7 +417,10 @@ void Farm::collectData(const boost::system::error_code& ec) {
 
                 if (devIdx >= 0) {
                     wrap_nvml_get_tempC(nvmlh, devIdx, &tempC);
-                    wrap_nvml_get_mem_tempC(nvmlh, devIdx, &memtempC);
+                    if (nvmlh->nvapi_dll)
+                        wrap_nvml_get_memory_tempC(nvmlh, devIdx, &memtempC);
+                    else
+                        wrap_nvml_get_mem_tempC(nvmlh, devIdx, &memtempC);
                     wrap_nvml_get_fanpcnt(nvmlh, devIdx, &fanpcnt);
 
                     if (m_Settings.hwMon == 2)
