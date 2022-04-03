@@ -213,7 +213,9 @@ struct TelemetryType {
                << std::setprecision(2) << hr << EthReset;
 
             if (hwmon)
-                ss << " " << EthTeal << miner.sensors.str() << EthReset;
+                ss << " " << EthTeal << miner.sensors.str() << " " << EthTeal << std::fixed << std::setprecision(1)
+               << hr / miner.sensors.powerW * 1000.0f << " "
+               << suffixes[magnitude>0 ? magnitude - 1 : magnitude] << "/W" << EthReset;
 
             // Eventually push also solutions per single GPU
             if (g_logOptions & LOG_PER_GPU)
