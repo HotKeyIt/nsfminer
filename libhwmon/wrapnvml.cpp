@@ -32,6 +32,11 @@ wrap_nvml_handle* wrap_nvml_create() {
 #define libnvidia_ml1 "nvml.dll"
 #define libnvidia_ml2 "%WINDIR%/system32/nvml.dll"
 #define libnvidia_ml3 "%PROGRAMFILES%/NVIDIA Corporation/NVSMI/nvml.dll"
+#ifdef _WIN64
+#define libnvidia_api "%WINDIR%/system32/nvapi64.dll"
+#else
+#define libnvidia_api "%WINDIR%/system32/nvapi.dll"
+#endif
 
 #elif defined(__linux)
 
@@ -48,6 +53,7 @@ wrap_nvml_handle* wrap_nvml_create() {
 #endif
 
     void* nvml_dll = nullptr;
+    void* nvapi_dll = nullptr;
 
 #ifdef _WIN32
     char tmp[512];
@@ -61,6 +67,8 @@ wrap_nvml_handle* wrap_nvml_create() {
             nvml_dll = wrap_dlopen(tmp);
         }
     }
+    ExpandEnvironmentStringsA(libnvidia_api, tmp, sizeof(tmp));
+    nvapi_dll = wrap_dlopen(tmp);
 #else
     nvml_dll = wrap_dlopen(libnvidia_ml);
 #endif
@@ -75,6 +83,7 @@ wrap_nvml_handle* wrap_nvml_create() {
         return nullptr;
 
     nvmlh->nvml_dll = nvml_dll;
+    nvmlh->nvapi_dll = nvapi_dll;
 
     nvmlh->nvmlInit = (wrap_nvmlReturn_t(*)(void))wrap_dlsym(nvmlh->nvml_dll, "nvmlInit");
     nvmlh->nvmlDeviceGetCount = (wrap_nvmlReturn_t(*)(int*))wrap_dlsym(nvmlh->nvml_dll, "nvmlDeviceGetCount_v2");
@@ -86,6 +95,42 @@ wrap_nvml_handle* wrap_nvml_create() {
         (wrap_nvmlReturn_t(*)(wrap_nvmlDevice_t, char*, int))wrap_dlsym(nvmlh->nvml_dll, "nvmlDeviceGetName");
     nvmlh->nvmlDeviceGetTemperature = (wrap_nvmlReturn_t(*)(wrap_nvmlDevice_t, int, unsigned int*))wrap_dlsym(
         nvmlh->nvml_dll, "nvmlDeviceGetTemperature");
+    nvmlh->nvapi_QueryInterface = (wrap_nvmlDevice_t(*)(unsigned int))wrap_dlsym(nvapi_dll, "nvapi_QueryInterface");
+    typedef unsigned int (*nvapiInit)();
+    typedef wrap_nvmlReturn_t (*nvapiEnumPhysicalGPUs)(wrap_nvmlDevice_t*, int*);
+    nvapiInit nvapi_Init = (nvapiInit)nvmlh->nvapi_QueryInterface(0x0150E828);
+    if (nvapi_Init()) {
+        wrap_dlclose(nvapi_dll);
+        nvmlh->nvapi_dll = NULL;
+    } else {
+        nvmlh->nvapi_GetThermalSensors =
+            (wrap_nvmlReturn_t(*)(wrap_nvmlDevice_t, wrap_nvapiThermalSensors*))nvmlh->nvapi_QueryInterface(0x65FE3AAD);
+        nvapiEnumPhysicalGPUs nvapi_EnumPhysicalGPUs =
+            (wrap_nvmlReturn_t(*)(wrap_nvmlDevice_t*, int*))nvmlh->nvapi_QueryInterface(0xE5AC921F);
+        nvmlh->nvapi_ts.Version = sizeof(wrap_nvapiThermalSensors) | 2 << 16;
+        wrap_nvmlDevice_t gpus[NVAPI_MAX_PHYSICAL_GPUS] = {0};
+        int gpucount = 0;
+        nvapi_EnumPhysicalGPUs(gpus, &gpucount);
+        if (gpucount) {
+            nvmlh->nvapi_devs = (nvapi_device_handles*)calloc(gpucount, sizeof(nvapi_device_handles));
+            gpucount--;
+            for (gpucount; gpucount >= 0; gpucount--) {
+                bool has_ts = false;
+                for (int TSMaxBit = 0; TSMaxBit < 32; TSMaxBit++) {
+                    // Find the maximum thermal sensor mask value.
+                    nvmlh->nvapi_ts.Mask = 1u << TSMaxBit;
+                    if ((nvmlh->nvapi_GetThermalSensors(gpus[gpucount], &nvmlh->nvapi_ts)) == WRAPNVML_SUCCESS) {
+                        has_ts = true;
+                        continue;
+                    }
+                    nvmlh->nvapi_ts.Mask--;
+                    break;
+                }
+                nvmlh->nvapi_devs[gpucount].gpu = gpus[gpucount];
+                nvmlh->nvapi_devs[gpucount].Mask = has_ts ? nvmlh->nvapi_ts.Mask : 0;
+            }
+        }
+    }
     nvmlh->nvmlDeviceGetFanSpeed =
         (wrap_nvmlReturn_t(*)(wrap_nvmlDevice_t, unsigned int*))wrap_dlsym(nvmlh->nvml_dll, "nvmlDeviceGetFanSpeed");
     nvmlh->nvmlDeviceGetPowerUsage =
@@ -103,6 +148,10 @@ wrap_nvml_handle* wrap_nvml_create() {
         cwarn << "NVIDIA hardware monitoring disabled";
 
         wrap_dlclose(nvmlh->nvml_dll);
+        if (nvmlh->nvapi_dll) {
+            nvmlh->nvapi_QueryInterface(0xD22BDD7E);
+            wrap_dlclose(nvmlh->nvapi_dll);
+        }
         free(nvmlh);
         return nullptr;
     }
@@ -115,6 +164,10 @@ wrap_nvml_handle* wrap_nvml_create() {
         cwarn << "Failed to load NVML library";
         cwarn << "NVIDIA hardware monitoring disabled";
         wrap_dlclose(nvmlh->nvml_dll);
+        if (nvmlh->nvapi_dll) {
+            nvmlh->nvapi_QueryInterface(0xD22BDD7E);
+            wrap_dlclose(nvmlh->nvapi_dll);
+        }
         free(nvmlh);
         return nullptr;
     }
@@ -144,6 +197,10 @@ int wrap_nvml_destroy(wrap_nvml_handle* nvmlh) {
     nvmlh->nvmlShutdown();
 
     wrap_dlclose(nvmlh->nvml_dll);
+    if (nvmlh->nvapi_dll) {
+        nvmlh->nvapi_QueryInterface(0xD22BDD7E);
+        wrap_dlclose(nvmlh->nvapi_dll);
+    }
     free(nvmlh);
     return 0;
 }
@@ -183,6 +240,16 @@ int wrap_nvml_get_mem_tempC(wrap_nvml_handle* nvmlh, int gpuindex, unsigned int*
         (f.nvmlReturn != WRAPNVML_SUCCESS))
         return -1;
     *tempC = f.value.uiVal;
+    return 0;
+}
+
+int wrap_nvml_get_memory_tempC(wrap_nvml_handle* nvmlh, int gpuindex, unsigned int* tempC) {
+    if (!nvmlh->nvapi_dll || gpuindex < 0 || gpuindex >= nvmlh->nvml_gpucount || !nvmlh->nvapi_devs[gpuindex].Mask)
+        return -1;
+    nvmlh->nvapi_ts.Mask = nvmlh->nvapi_devs[gpuindex].Mask;
+    if ((nvmlh->nvapi_GetThermalSensors(nvmlh->nvapi_devs[gpuindex].gpu, &nvmlh->nvapi_ts) != WRAPNVML_SUCCESS))
+        return -1;
+    *tempC = nvmlh->nvapi_ts.Temperatures[9] / 256.0f;
     return 0;
 }
 
